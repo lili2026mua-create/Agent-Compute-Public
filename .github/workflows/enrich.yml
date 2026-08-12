@@ -1,0 +1,90 @@
+# enrich — گامِ ۲ی چرخهٔ محتوا، روی رانرِ عمومیِ رایگان.
+# ⛔ این مخزن هیچ رازی ندارد و نباید داشته باشد. رسانه فقط با لینکِ موقتِ ورودی می‌آید.
+# خروجی فقط به‌صورتِ آرتیفکت برمی‌گردد؛ این ورک‌فلو هیچ‌جا نمی‌نویسد.
+name: enrich
+
+on:
+  workflow_dispatch:
+    inputs:
+      key:
+        description: "کلیدِ بسته"
+        required: true
+      media_url:
+        description: "لینکِ مستقیمِ دانلودِ رسانه (موقت — پس از پایان باطل می‌شود)"
+        required: true
+      source:
+        description: "telegram یا drive"
+        required: false
+        default: "drive"
+      whisper_model:
+        description: "small یا medium"
+        required: false
+        default: "medium"
+
+permissions:
+  contents: read
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: نصبِ کتابخانه‌ها
+        run: pip install --quiet faster-whisper
+
+      - name: نصبِ ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version >/dev/null || { echo "::error::ffmpeg نصب نشد"; exit 1; }
+
+      - name: کشِ مدلِ رونویسی
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-${{ github.event.inputs.whisper_model }}
+
+      - name: دانلودِ رسانه
+        # ⛔ لینک هرگز چاپ نمی‌شود؛ در متغیرِ محیطی می‌ماند.
+        env:
+          MEDIA_URL: ${{ github.event.inputs.media_url }}
+          KEY: ${{ github.event.inputs.key }}
+          SRC: ${{ github.event.inputs.source }}
+        run: |
+          set -euo pipefail
+          mkdir -p "pool/$SRC/$KEY"
+          curl -sSL --fail -o "pool/$SRC/$KEY/$KEY.mp4" "$MEDIA_URL"
+          SZ=$(stat -c%s "pool/$SRC/$KEY/$KEY.mp4")
+          echo "حجمِ دریافتی: $SZ بایت"
+          [ "$SZ" -gt 10000 ] || { echo "::error::دانلود ناقص بود"; exit 1; }
+
+      - name: غنی‌سازی — برشِ فریم و رونویسی
+        env:
+          WHISPER_MODEL: ${{ github.event.inputs.whisper_model }}
+        run: python3 Sys.scripts/pool_enrich.py --pool pool
+
+      - name: حذفِ صفحهٔ نمایشِ سنگین از خروجی
+        # index.html در سمتِ خصوصی با لینکِ Drive ساخته می‌شود، نه این‌جا با امبدِ base64.
+        run: find pool -name index.html -delete || true
+
+      - name: بستهٔ خروجی
+        env:
+          KEY: ${{ github.event.inputs.key }}
+          SRC: ${{ github.event.inputs.source }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp -r "pool/$SRC/$KEY/." out/
+          rm -f "out/$KEY.mp4"
+          echo "محتوای خروجی:"; ls -1R out | head -40
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: enriched-${{ github.event.inputs.key }}
+          path: out/
+          retention-days: 1
