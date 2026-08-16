@@ -3,10 +3,21 @@ name: render
 on:
   workflow_dispatch:
     inputs:
-      urls:   { description: "Comma-separated URLs", required: true }
-      scroll: { description: "Scroll-to-bottom passes for infinite lists", required: false, default: "0" }
-      wait:   { description: "load | domcontentloaded | networkidle", required: false, default: "networkidle" }
-      shots:  { description: "Capture full-page screenshots (true/false)", required: false, default: "false" }
+      urls:
+        description: "Comma-separated URLs"
+        required: true
+      scroll:
+        description: "Scroll-to-bottom passes for infinite lists"
+        required: false
+        default: "0"
+      wait:
+        description: "load | domcontentloaded | networkidle"
+        required: false
+        default: "networkidle"
+      shots:
+        description: "Capture full-page screenshots (true/false)"
+        required: false
+        default: "false"
 permissions:
   contents: read
 jobs:
@@ -16,7 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with:
+          python-version: "3.12"
       - name: Install Playwright + Chromium
         run: |
           python -m pip install --quiet --upgrade pip
@@ -57,4 +69,7 @@ jobs:
                     f"{'still a shell' if s['shell'] else 'real text'} |")
           PY
       - uses: actions/upload-artifact@v4
-        with: { name: "render-${{ github.run_id }}", path: out/, retention-days: 7 }
+        with:
+          name: "render-${{ github.run_id }}"
+          path: out/
+          retention-days: 7

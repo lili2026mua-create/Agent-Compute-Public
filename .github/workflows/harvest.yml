@@ -3,12 +3,29 @@ name: harvest
 on:
   workflow_dispatch:
     inputs:
-      url:        { description: "Start URL", required: true }
-      depth:      { description: "Link depth", required: false, default: "2" }
-      max_pages:  { description: "Page cap", required: false, default: "100" }
-      include_pat:{ description: "Regex a URL must match to be queued", required: false, default: "" }
-      delay:      { description: "Seconds between requests to a host", required: false, default: "1.0" }
-      min_chars:  { description: "Below this many chars a page counts as an empty shell", required: false, default: "500" }
+      url:
+        description: "Start URL"
+        required: true
+      depth:
+        description: "Link depth"
+        required: false
+        default: "2"
+      max_pages:
+        description: "Page cap"
+        required: false
+        default: "100"
+      include_pat:
+        description: "Regex a URL must match to be queued"
+        required: false
+        default: ""
+      delay:
+        description: "Seconds between requests to a host"
+        required: false
+        default: "1.0"
+      min_chars:
+        description: "Below this many chars a page counts as an empty shell"
+        required: false
+        default: "500"
 permissions:
   contents: read
 jobs:
@@ -53,4 +70,7 @@ jobs:
                   print(f"- `{f['url']}` - {f['reason']}")
           PY
       - uses: actions/upload-artifact@v4
-        with: { name: "harvest-${{ github.run_id }}", path: out/, retention-days: 7 }
+        with:
+          name: "harvest-${{ github.run_id }}"
+          path: out/
+          retention-days: 7
