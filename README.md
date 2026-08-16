@@ -17,3 +17,29 @@
 ## اجرا
 ورک‌فلوی `enrich.yml` با ورودی‌های `key`، `media_url`، `source` و `whisper_model` صدا زده
 می‌شود و خروجی را با نامِ `enriched-<key>` به‌عنوانِ آرتیفکت می‌گذارد.
+
+---
+
+## Web harvesting tools (added 1405-05-26)
+
+Three dependency-light tools for reading public web pages, plus two workflows that
+expose them as manually-dispatched jobs returning build artifacts.
+
+| file | what it does | needs |
+|---|---|---|
+| `Sys.scripts/web_extract.py` | one page → readable text + JSON-LD + links | standard library only |
+| `Sys.scripts/site_crawl.py` | multi-page crawl with robots.txt and a politeness delay | standard library only |
+| `Sys.scripts/render_fetch.py` | render a client-side page and read the visible text | Playwright + Chromium |
+
+Workflows: `harvest.yml` (crawl) and `render.yml` (browser render).
+
+**Design rules, same spirit as the security rules above:**
+
+- HTTP 200 is not success. A page returning 200 with almost no extractable text is
+  reported as failed with the reason "empty shell", never counted as a win.
+- Truncation is never silent — byte caps and link caps are always reported.
+- robots.txt is obeyed, with one correction: the standard library treats
+  `Disallow: /path/?` as blocking the whole branch when the site owner only meant
+  query-string URLs. That rule is applied only to URLs carrying a query.
+- No secrets, no stored data. Every input arrives through workflow inputs; output
+  leaves as a short-retention artifact.

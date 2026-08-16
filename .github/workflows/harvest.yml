@@ -1,0 +1,56 @@
+# Multi-page crawl. Standard library only - no dependency install step.
+name: harvest
+on:
+  workflow_dispatch:
+    inputs:
+      url:        { description: "Start URL", required: true }
+      depth:      { description: "Link depth", required: false, default: "2" }
+      max_pages:  { description: "Page cap", required: false, default: "100" }
+      include_pat:{ description: "Regex a URL must match to be queued", required: false, default: "" }
+      delay:      { description: "Seconds between requests to a host", required: false, default: "1.0" }
+      min_chars:  { description: "Below this many chars a page counts as an empty shell", required: false, default: "500" }
+permissions:
+  contents: read
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Crawl
+        env:
+          URL: ${{ inputs.url }}
+          DEPTH: ${{ inputs.depth }}
+          MAX_PAGES: ${{ inputs.max_pages }}
+          INCLUDE_PAT: ${{ inputs.include_pat }}
+          DELAY: ${{ inputs.delay }}
+          MIN_CHARS: ${{ inputs.min_chars }}
+        run: |
+          set -u
+          mkdir -p out
+          args=( "$URL" --out out/result.json --depth "$DEPTH" --max-pages "$MAX_PAGES"
+                 --delay "$DELAY" --min-chars "$MIN_CHARS" )
+          [ -n "$INCLUDE_PAT" ] && args+=( --include-pat "$INCLUDE_PAT" )
+          # A failed crawl is a result, not a broken job.
+          python3 Sys.scripts/site_crawl.py "${args[@]}" 2>&1 | tee out/log.txt || true
+      - name: Summary
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, os
+          p = "out/result.json"
+          if not os.path.exists(p):
+              print("## No output produced"); raise SystemExit
+          d = json.load(open(p, encoding="utf-8")); s = d["summary"]
+          print(f"## Harvest of {d['root']}\n")
+          print(f"- robots.txt: {d['robots']} - sitemap seeds: {d['sitemap_seeds']}")
+          print(f"- queued **{s['queued_total']}** - ok **{s['ok']}** - "
+                f"failed **{s['failed']}** - text **{s['text_chars_total']}** chars")
+          if s["stopped_at_cap"]:
+              print("- Stopped at the page cap - the harvest is **incomplete**.")
+          if d["failed"]:
+              print("\n### Failed pages\n")
+              for f in d["failed"][:25]:
+                  print(f"- `{f['url']}` - {f['reason']}")
+          PY
+      - uses: actions/upload-artifact@v4
+        with: { name: "harvest-${{ github.run_id }}", path: out/, retention-days: 7 }

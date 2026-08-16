@@ -1,0 +1,60 @@
+# Render JavaScript pages in a real browser and extract the visible text.
+name: render
+on:
+  workflow_dispatch:
+    inputs:
+      urls:   { description: "Comma-separated URLs", required: true }
+      scroll: { description: "Scroll-to-bottom passes for infinite lists", required: false, default: "0" }
+      wait:   { description: "load | domcontentloaded | networkidle", required: false, default: "networkidle" }
+      shots:  { description: "Capture full-page screenshots (true/false)", required: false, default: "false" }
+permissions:
+  contents: read
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install Playwright + Chromium
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+      - name: Render
+        env:
+          URLS: ${{ inputs.urls }}
+          SCROLL: ${{ inputs.scroll }}
+          WAIT: ${{ inputs.wait }}
+          SHOTS: ${{ inputs.shots }}
+        run: |
+          set -u
+          mkdir -p out
+          i=0
+          IFS=',' read -ra ITEMS <<< "$URLS"
+          for u in "${ITEMS[@]}"; do
+            u="$(echo "$u" | xargs)"; [ -z "$u" ] && continue
+            i=$((i+1))
+            args=( "$u" --out "out/page-$i.json" --scroll "$SCROLL" --wait "$WAIT" )
+            [ "$SHOTS" = "true" ] && args+=( --shot "out/page-$i.png" )
+            # One failed page must not kill the job - seeing the failure is the point.
+            python3 Sys.scripts/render_fetch.py "${args[@]}" || true
+          done
+      - name: Summary
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, json
+          files = sorted(glob.glob("out/page-*.json"))
+          if not files:
+              print("## Nothing rendered"); raise SystemExit
+          print("## Render results\n")
+          print("| page | chars | links | verdict |")
+          print("|---|---|---|---|")
+          for f in files:
+              d = json.load(open(f, encoding="utf-8")); s = d["stats"]
+              print(f"| `{d['url']}` | {s['text_chars']} | {s['links_total']} | "
+                    f"{'still a shell' if s['shell'] else 'real text'} |")
+          PY
+      - uses: actions/upload-artifact@v4
+        with: { name: "render-${{ github.run_id }}", path: out/, retention-days: 7 }
