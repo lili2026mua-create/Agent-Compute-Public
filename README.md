@@ -30,8 +30,14 @@ expose them as manually-dispatched jobs returning build artifacts.
 | `Sys.scripts/web_extract.py` | one page → readable text + JSON-LD + links | standard library only |
 | `Sys.scripts/site_crawl.py` | multi-page crawl with robots.txt and a politeness delay | standard library only |
 | `Sys.scripts/render_fetch.py` | render a client-side page and read the visible text | Playwright + Chromium |
+| `Sys.scripts/digikala_render.py` | render a product search, then read the page's own JSON API for listings, details and comments | Playwright + Chromium |
 
-Workflows: `harvest.yml` (crawl) and `render.yml` (browser render).
+Workflows: `harvest.yml` (crawl), `render.yml` (browser render) and
+`digikala.yml` (product search).
+
+`digikala.yml` takes the whole search as a JSON `request` input — queries, keyword
+filters and price bounds. Nothing about who asked, or why, is stored in this repo;
+the caller passes it at dispatch time and reads the answer back as an artifact.
 
 **Design rules, same spirit as the security rules above:**
 
