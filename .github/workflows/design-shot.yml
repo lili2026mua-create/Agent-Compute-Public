@@ -1,0 +1,61 @@
+# Screenshot an HTML file from this repo in real headless Chromium (Playwright).
+# Purpose: design previews with modern CSS (backdrop-filter, blur, variable fonts)
+# that the chat-local wkhtmltoimage (legacy WebKit) cannot render.
+# Boundary (measured 1405-05-29 on render.yml): headless Chromium here has no WebGL.
+name: design-shot
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: "Path of the HTML file inside this repo (e.g. previews/nav.html)"
+        required: true
+      width:
+        description: "Viewport width in px"
+        required: false
+        default: "1220"
+      wait_ms:
+        description: "Extra wait before the shot (ms)"
+        required: false
+        default: "1500"
+permissions:
+  contents: read
+jobs:
+  shot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install Playwright + Chromium
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+      - name: Shot
+        env:
+          P: ${{ inputs.path }}
+          W: ${{ inputs.width }}
+          MS: ${{ inputs.wait_ms }}
+        run: |
+          mkdir -p out
+          python3 - <<'PY'
+          import os
+          from playwright.sync_api import sync_playwright
+          path = os.path.abspath(os.environ["P"])
+          width = int(os.environ["W"]); wait = int(os.environ["MS"])
+          with sync_playwright() as pw:
+              b = pw.chromium.launch()
+              page = b.new_page(viewport={"width": width, "height": 900},
+                                device_scale_factor=2)
+              page.goto("file://" + path)
+              page.wait_for_timeout(wait)
+              page.screenshot(path="out/shot.png", full_page=True)
+              b.close()
+          print("shot ok:", path)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: design-shot
+          path: out/
