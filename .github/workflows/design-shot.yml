@@ -7,8 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       path:
-        description: "Path of the HTML file inside this repo (e.g. previews/nav.html)"
-        required: true
+        description: "Path of an HTML file inside this repo (e.g. previews/nav.html)"
+        required: false
+        default: ""
+      url:
+        description: "OR: a public http(s) URL to open instead of a repo file"
+        required: false
+        default: ""
+      scroll:
+        description: "Scroll-to-bottom passes before the shot"
+        required: false
+        default: "0" 
       width:
         description: "Viewport width in px"
         required: false
@@ -36,24 +45,36 @@ jobs:
       - name: Shot
         env:
           P: ${{ inputs.path }}
+          U: ${{ inputs.url }}
           W: ${{ inputs.width }}
           MS: ${{ inputs.wait_ms }}
+          SC: ${{ inputs.scroll }}
         run: |
           mkdir -p out
           python3 - <<'PY'
           import os
           from playwright.sync_api import sync_playwright
-          path = os.path.abspath(os.environ["P"])
+          url = os.environ.get("U", "").strip()
+          path = os.environ.get("P", "").strip()
+          target = url if url else ("file://" + os.path.abspath(path))
           width = int(os.environ["W"]); wait = int(os.environ["MS"])
+          scroll = int(os.environ.get("SC", "0"))
           with sync_playwright() as pw:
               b = pw.chromium.launch()
               page = b.new_page(viewport={"width": width, "height": 900},
                                 device_scale_factor=2)
-              page.goto("file://" + path)
+              page.goto(target, wait_until="domcontentloaded", timeout=60000)
+              try:
+                  page.wait_for_load_state("networkidle", timeout=20000)
+              except Exception:
+                  pass
+              for _ in range(scroll):
+                  page.mouse.wheel(0, 2200)
+                  page.wait_for_timeout(1600)
               page.wait_for_timeout(wait)
               page.screenshot(path="out/shot.png", full_page=True)
               b.close()
-          print("shot ok:", path)
+          print("shot ok:", target)
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
