@@ -141,6 +141,7 @@ jobs:
                   # the text without depending on a clipboard write AND reveals the
                   # address, which is what lets all of them be fetched directly.
                   seen_urls = {}
+                  raws = []
 
                   def _on_response(resp):
                       try:
@@ -153,10 +154,19 @@ jobs:
                           return
                       if not body or len(body) < 400:
                           return
-                      if any(k in body for k in ("Role & Persona", "award-winning",
-                                                 "Master Prompt", "Act as an")):
+                      needles = ("Role & Persona", "award-winning",
+                                 "Master Prompt", "Act as an", "You are an")
+                      counts = {k: body.count(k) for k in needles if k in body}
+                      if counts:
                           seen_urls[u] = len(body)
-                          out.setdefault("net", []).append({"url": u, "len": len(body)})
+                          rec = {"url": u, "len": len(body), "counts": counts}
+                          # ⛔ Keep a window around the first hit: knowing WHERE the
+                          #    text sits in the document is what tells us how to parse
+                          #    all of them without pressing a single button.
+                          k0 = min(body.index(k) for k in counts)
+                          rec["window"] = body[max(0, k0 - 260):k0 + 260]
+                          out.setdefault("net", []).append(rec)
+                          raws.append((u, body))
 
                   page.on("response", _on_response)
                   page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -321,8 +331,15 @@ jobs:
                   out["clicks"] = clicks
                   out["notes"].append(
                       f"responses carrying prompt text: {len(seen_urls)}")
-                  for u, n in list(seen_urls.items())[:8]:
-                      out["notes"].append(f"  from {u[:110]} ({n} chars)")
+                  for r in out.get("net", [])[:8]:
+                      out["notes"].append(
+                          f"  from {r['url'][:100]} ({r['len']} chars) {r['counts']}")
+                      out["notes"].append(
+                          "  window: " + r["window"].replace("\n", " ")[:420])
+                  # ⛔ Keep the raw bodies: they are the real evidence, and a parser
+                  #    can be written against them without another run.
+                  for i, (u, b) in enumerate(raws[:3]):
+                      open(f"out/raw-{i}.txt", "w", encoding="utf-8").write(b)
                   save()
 
                   # Decoration last, and never fatal.
