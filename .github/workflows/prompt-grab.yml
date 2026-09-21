@@ -133,6 +133,32 @@ jobs:
                       out["notes"].append(f"permissions: {e}")
                   ctx.add_init_script(HOOK)
                   page = ctx.new_page()
+
+                  # ⛔ LISTEN TO THE NETWORK, NOT ONLY THE CLIPBOARD (1405-06-30)
+                  # The payload probe proved the prompt text is NOT in the page:
+                  # scripts=32, script hits=0, flight=0, html-has-prompt=False.
+                  # So the button fetches it. Recording the response both captures
+                  # the text without depending on a clipboard write AND reveals the
+                  # address, which is what lets all of them be fetched directly.
+                  seen_urls = {}
+
+                  def _on_response(resp):
+                      try:
+                          u = resp.url
+                          if u.startswith("data:") or resp.request.resource_type in (
+                                  "image", "font", "stylesheet", "media"):
+                              return
+                          body = resp.text()
+                      except Exception:
+                          return
+                      if not body or len(body) < 400:
+                          return
+                      if any(k in body for k in ("Role & Persona", "award-winning",
+                                                 "Master Prompt", "Act as an")):
+                          seen_urls[u] = len(body)
+                          out.setdefault("net", []).append({"url": u, "len": len(body)})
+
+                  page.on("response", _on_response)
                   page.goto(url, wait_until="domcontentloaded", timeout=60000)
                   try:
                       page.wait_for_load_state("networkidle", timeout=25000)
@@ -293,6 +319,10 @@ jobs:
                       out["clicks"] = clicks
                       save()
                   out["clicks"] = clicks
+                  out["notes"].append(
+                      f"responses carrying prompt text: {len(seen_urls)}")
+                  for u, n in list(seen_urls.items())[:8]:
+                      out["notes"].append(f"  from {u[:110]} ({n} chars)")
                   save()
 
                   # Decoration last, and never fatal.
