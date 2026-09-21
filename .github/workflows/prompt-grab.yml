@@ -142,6 +142,49 @@ jobs:
                       page.mouse.wheel(0, 2400); page.wait_for_timeout(1500)
                   page.wait_for_timeout(1500)
 
+                  # ⛔ LOOK IN THE PAGE DATA BEFORE CLICKING ANYTHING.
+                  # Clicking is the fragile path. If the prompts already ship inside
+                  # the page payload (Next.js flight data, an inline JSON script),
+                  # one read gets all of them and no button has to cooperate.
+                  probe = page.evaluate("""() => {
+                       const needles = ['Role & Persona', 'award-winning',
+                                        'Master Prompt', 'Act as an'];
+                       const hits = [];
+                       let scripts = 0;
+                       for (const s of Array.from(document.querySelectorAll('script'))) {
+                         scripts++;
+                         const t = s.textContent || '';
+                         if (!t) continue;
+                         const n = needles.find(x => t.includes(x));
+                         if (n) hits.push({where: s.id || s.type || 'inline',
+                                           len: t.length, needle: n});
+                       }
+                       let flight = 0, flightHit = 0;
+                       try {
+                         const f = self.__next_f || [];
+                         flight = f.length;
+                         for (const c of f) {
+                           const t = Array.isArray(c) ? String(c[1] || '') : String(c || '');
+                           if (needles.some(x => t.includes(x))) flightHit++;
+                         }
+                       } catch (e) {}
+                       const html = document.documentElement.innerHTML;
+                       return {scripts: scripts, hits: hits, flight: flight,
+                               flightHit: flightHit,
+                               htmlLen: html.length,
+                               htmlHasPrompt: needles.some(x => html.includes(x))};
+                     }""")
+                  out["payload_probe"] = probe
+                  out["notes"].append(
+                      f"payload probe: scripts={probe['scripts']} "
+                      f"script-hits={len(probe['hits'])} flight={probe['flight']} "
+                      f"flight-hits={probe['flightHit']} "
+                      f"html-has-prompt={probe['htmlHasPrompt']}")
+                  for h in probe["hits"][:5]:
+                      out["notes"].append(
+                          f"  script hit: {h['where']} · {h['len']} chars · {h['needle']!r}")
+                  save()
+
                   # ⛔ RE-TAG BEFORE EVERY CLICK (fixed 1405-06-30, run 35614763448)
                   # Tagging all targets once and clicking them in a loop fails on a
                   # React page: the first successful copy re-renders the cards, the
