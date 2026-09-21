@@ -56,7 +56,7 @@ permissions:
 jobs:
   grab:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -142,89 +142,109 @@ jobs:
                       page.mouse.wheel(0, 2400); page.wait_for_timeout(1500)
                   page.wait_for_timeout(1500)
 
-                  # ⛔ Ask the DOM for the innermost real control (see header).
-                  # A candidate that CONTAINS another candidate is a wrapper: drop it.
-                  targets = page.evaluate(
-                      """labels => {
-                           const want = labels.map(s => s.toLowerCase());
-                           const all = Array.from(document.querySelectorAll('*'));
-                           let cand = [];
-                           for (const el of all) {
-                             const txt = (el.innerText || el.getAttribute('aria-label') || '')
-                                           .trim().toLowerCase();
-                             if (!want.some(w => txt.includes(w))) continue;
-                             const r = el.getBoundingClientRect();
-                             if (r.width < 4 || r.height < 4) continue;
-                             cand.push(el);
-                           }
-                           // drop every candidate that contains another candidate
-                           const inner = cand.filter(
-                             el => !cand.some(o => o !== el && el.contains(o)));
-                           const out = [];
-                           const seen = new Set();
-                           for (const el of inner) {
-                             const r = el.getBoundingClientRect();
-                             const key = Math.round(r.top) + 'x' + Math.round(r.left);
-                             if (seen.has(key)) continue;
-                             seen.add(key);
-                             let tag = '';
-                             let p = el;
-                             for (let d = 0; d < 8 && p; d++, p = p.parentElement) {
-                               const t = (p.innerText || '').trim().split('\\n')
-                                           .map(x => x.trim())
-                                           .filter(x => x.length > 1 &&
-                                                   !want.some(w => x.toLowerCase().includes(w)));
-                               if (t.length) { tag = t[0].slice(0, 60); break; }
-                             }
-                             el.setAttribute('data-grab-idx', String(out.length));
-                             out.push({tag: tag,
-                                       node: el.tagName.toLowerCase(),
-                                       role: el.getAttribute('role') || '',
-                                       cls: (el.className || '').toString().slice(0, 40),
-                                       top: Math.round(r.top), left: Math.round(r.left)});
-                           }
-                           return {raw: cand.length, targets: out};
-                         }""", labels)
-                  out["raw_matches"] = targets["raw"]
-                  targets = targets["targets"]
-                  out["buttons_seen"] = len(targets)
-                  out["targets"] = targets
-                  out["notes"].append(
-                      f"raw text matches: {out['raw_matches']} -> innermost: {len(targets)}")
+                  # ⛔ RE-TAG BEFORE EVERY CLICK (fixed 1405-06-30, run 35614763448)
+                  # Tagging all targets once and clicking them in a loop fails on a
+                  # React page: the first successful copy re-renders the cards, the
+                  # tagged nodes are replaced, and every later locator matches nothing
+                  # and times out. Evidence: target 0 +1, target 1 +0, targets 2..19
+                  # all TimeoutError. So the DOM is re-asked for the i-th target
+                  # immediately before each click.
+                  FIND = """(args) => {
+                       const want = args.labels.map(s => s.toLowerCase());
+                       const i = args.i;
+                       const all = Array.from(document.querySelectorAll('*'));
+                       const cand = [];
+                       for (const el of all) {
+                         const txt = (el.innerText || el.getAttribute('aria-label') || '')
+                                       .trim().toLowerCase();
+                         if (!want.some(w => txt.includes(w))) continue;
+                         const r = el.getBoundingClientRect();
+                         if (r.width < 4 || r.height < 4) continue;
+                         cand.push(el);
+                       }
+                       const inner = cand.filter(
+                         el => !cand.some(o => o !== el && el.contains(o)));
+                       const seen = new Set(); const uniq = [];
+                       for (const el of inner) {
+                         const r = el.getBoundingClientRect();
+                         const key = Math.round(r.top + window.scrollY) + 'x'
+                                   + Math.round(r.left + window.scrollX);
+                         if (seen.has(key)) continue;
+                         seen.add(key); uniq.push(el);
+                       }
+                       if (args.count) return {total: uniq.length};
+                       const el = uniq[i];
+                       if (!el) return null;
+                       // the real control is the nearest clickable ANCESTOR, not the span
+                       let hit = el;
+                       let p = el;
+                       for (let d = 0; d < 6 && p; d++, p = p.parentElement) {
+                         const tn = p.tagName.toLowerCase();
+                         if (tn === 'button' || tn === 'a' ||
+                             p.getAttribute('role') === 'button' ||
+                             (getComputedStyle(p).cursor === 'pointer')) { hit = p; break; }
+                       }
+                       let tag = '';
+                       p = el;
+                       for (let d = 0; d < 8 && p; d++, p = p.parentElement) {
+                         const t = (p.innerText || '').trim().split('\\n')
+                                     .map(x => x.trim())
+                                     .filter(x => x.length > 1 &&
+                                             !want.some(w => x.toLowerCase().includes(w)));
+                         if (t.length) { tag = t[0].slice(0, 60); break; }
+                       }
+                       document.querySelectorAll('[data-grab-now]')
+                               .forEach(n => n.removeAttribute('data-grab-now'));
+                       hit.setAttribute('data-grab-now', '1');
+                       return {tag: tag, node: hit.tagName.toLowerCase(),
+                               inner: el.tagName.toLowerCase(), total: uniq.length};
+                     }"""
+
+                  n_total = page.evaluate(FIND, {"labels": labels, "i": 0,
+                                                 "count": True})["total"]
+                  out["buttons_seen"] = n_total
+                  out["notes"].append(f"innermost targets on page: {n_total}")
 
                   clicks = 0
-                  for idx, t in enumerate(targets):
+                  for idx in range(n_total):
                       if clicks >= maxc: break
-                      tag = t["tag"]
+                      info = page.evaluate(FIND, {"labels": labels, "i": idx,
+                                                  "count": False})
+                      if not info:
+                          out["notes"].append(f"target {idx}: vanished before the click")
+                          continue
+                      tag = info["tag"]
                       before = page.evaluate("window.__grabbed.length")
-                      el = page.locator(f'[data-grab-idx="{idx}"]')
+                      el = page.locator('[data-grab-now="1"]')
                       how = "click"
                       try:
                           el.scroll_into_view_if_needed(timeout=4000)
+                          try:
+                              el.hover(timeout=2000)   # the button may only show on hover
+                              page.wait_for_timeout(200)
+                          except Exception:
+                              pass
                           el.click(timeout=6000)
                       except Exception as e:
-                          # ⛔ A swallowed real click is NOT a success. Say which path ran.
-                          how = f"dispatch/{type(e).__name__}"
+                          how = f"force/{type(e).__name__}"
                           try:
-                              el.dispatch_event("click")
+                              el.click(timeout=4000, force=True)
                           except Exception as e2:
                               out["notes"].append(
-                                  f"target {idx} <{t['node']}> {tag[:24]!r}: both failed "
-                                  f"({type(e).__name__}/{type(e2).__name__})")
+                                  f"target {idx} <{info['node']}> {tag[:24]!r}: "
+                                  f"both failed ({type(e).__name__}/{type(e2).__name__})")
                               continue
                       page.wait_for_timeout(700)
-                      try:
-                          page.keyboard.press("Escape"); page.wait_for_timeout(250)
-                      except Exception:
-                          pass
                       clicks += 1
                       after = page.evaluate("window.__grabbed")
                       got = len(after) - before
-                      out["notes"].append(
-                          f"target {idx} <{t['node']}> {tag[:24]!r} via {how}: +{got}")
                       if got > 0:
                           for x in after[before:]:
                               out["items"].append({"label": tag, "prompt": x})
+                      else:
+                          out["notes"].append(
+                              f"target {idx} <{info['node']}/{info['inner']}> "
+                              f"{tag[:24]!r} via {how}: +0")
                       # ⛔ Save after every capture: a crash on click 12 must not
                       #    throw away the eleven prompts already in hand.
                       out["clicks"] = clicks
