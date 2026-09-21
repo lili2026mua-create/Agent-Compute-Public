@@ -143,65 +143,88 @@ jobs:
                   page.wait_for_timeout(1500)
 
                   # ⛔ Ask the DOM for the innermost real control (see header).
+                  # A candidate that CONTAINS another candidate is a wrapper: drop it.
                   targets = page.evaluate(
                       """labels => {
                            const want = labels.map(s => s.toLowerCase());
-                           const all = Array.from(document.querySelectorAll(
-                             'button,[role=button],a[href="#"],[data-copy],[class*=copy]'));
-                           const seen = new Set(); const out = [];
+                           const all = Array.from(document.querySelectorAll('*'));
+                           let cand = [];
                            for (const el of all) {
                              const txt = (el.innerText || el.getAttribute('aria-label') || '')
                                            .trim().toLowerCase();
                              if (!want.some(w => txt.includes(w))) continue;
-                             if (el.querySelector('button,[role=button]')) continue;
                              const r = el.getBoundingClientRect();
                              if (r.width < 4 || r.height < 4) continue;
+                             cand.push(el);
+                           }
+                           // drop every candidate that contains another candidate
+                           const inner = cand.filter(
+                             el => !cand.some(o => o !== el && el.contains(o)));
+                           const out = [];
+                           const seen = new Set();
+                           for (const el of inner) {
+                             const r = el.getBoundingClientRect();
+                             const key = Math.round(r.top) + 'x' + Math.round(r.left);
+                             if (seen.has(key)) continue;
+                             seen.add(key);
                              let tag = '';
                              let p = el;
-                             for (let d = 0; d < 6 && p; d++, p = p.parentElement) {
+                             for (let d = 0; d < 8 && p; d++, p = p.parentElement) {
                                const t = (p.innerText || '').trim().split('\\n')
                                            .map(x => x.trim())
                                            .filter(x => x.length > 1 &&
                                                    !want.some(w => x.toLowerCase().includes(w)));
                                if (t.length) { tag = t[0].slice(0, 60); break; }
                              }
-                             const key = tag + '|' + Math.round(r.top) + '|' + Math.round(r.left);
-                             if (seen.has(key)) continue;
-                             seen.add(key);
                              el.setAttribute('data-grab-idx', String(out.length));
-                             out.push(tag);
+                             out.push({tag: tag,
+                                       node: el.tagName.toLowerCase(),
+                                       role: el.getAttribute('role') || '',
+                                       cls: (el.className || '').toString().slice(0, 40),
+                                       top: Math.round(r.top), left: Math.round(r.left)});
                            }
-                           return out;
+                           return {raw: cand.length, targets: out};
                          }""", labels)
+                  out["raw_matches"] = targets["raw"]
+                  targets = targets["targets"]
                   out["buttons_seen"] = len(targets)
-                  out["notes"].append(f"deduped clickables: {len(targets)}")
+                  out["targets"] = targets
+                  out["notes"].append(
+                      f"raw text matches: {out['raw_matches']} -> innermost: {len(targets)}")
 
                   clicks = 0
-                  for idx, tag in enumerate(targets):
+                  for idx, t in enumerate(targets):
                       if clicks >= maxc: break
+                      tag = t["tag"]
                       before = page.evaluate("window.__grabbed.length")
                       el = page.locator(f'[data-grab-idx="{idx}"]')
+                      how = "click"
                       try:
                           el.scroll_into_view_if_needed(timeout=4000)
                           el.click(timeout=6000)
-                      except Exception:
-                          # A card overlay can swallow the real click; dispatch it directly.
+                      except Exception as e:
+                          # ⛔ A swallowed real click is NOT a success. Say which path ran.
+                          how = f"dispatch/{type(e).__name__}"
                           try:
                               el.dispatch_event("click")
-                          except Exception as e:
-                              out["notes"].append(f"click {idx} ({tag[:20]}): {type(e).__name__}")
+                          except Exception as e2:
+                              out["notes"].append(
+                                  f"target {idx} <{t['node']}> {tag[:24]!r}: both failed "
+                                  f"({type(e).__name__}/{type(e2).__name__})")
                               continue
                       page.wait_for_timeout(700)
-                      # ⛔ Dismiss whatever the click opened, or the next click is blocked.
                       try:
                           page.keyboard.press("Escape"); page.wait_for_timeout(250)
                       except Exception:
                           pass
                       clicks += 1
                       after = page.evaluate("window.__grabbed")
-                      if len(after) > before:
-                          for t in after[before:]:
-                              out["items"].append({"label": tag, "prompt": t})
+                      got = len(after) - before
+                      out["notes"].append(
+                          f"target {idx} <{t['node']}> {tag[:24]!r} via {how}: +{got}")
+                      if got > 0:
+                          for x in after[before:]:
+                              out["items"].append({"label": tag, "prompt": x})
                       # ⛔ Save after every capture: a crash on click 12 must not
                       #    throw away the eleven prompts already in hand.
                       out["clicks"] = clicks
@@ -241,7 +264,7 @@ jobs:
               for it in d["items"][:25]:
                   p = it["prompt"].replace("|", "\\|").replace("\n", " ")[:120]
                   print(f"| {it['label'][:40]} | {p} |")
-          for n in d.get("notes", [])[:10]:
+          for n in d.get("notes", [])[:40]:
               print(f"\n- note: {n}")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
