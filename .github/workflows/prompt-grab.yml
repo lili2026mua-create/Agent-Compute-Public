@@ -14,6 +14,14 @@
 # document.execCommand('copy') path, and the 'copy' event. Whatever the page
 # tries to copy lands in a JS array we read back afterwards.
 #
+# ⛔ INNERMOST CLICKABLE, NOT EVERY TEXT MATCH (fixed 1405-06-30, run 35612219710)
+# Matching by text alone found 69 nodes for 16 buttons - the label span, the
+# button around it, and the card around that all contain the same string.
+# Clicking an ancestor is not actionable, so clicks 2..16 each burned an 8s
+# timeout and only one prompt came back. The page is now asked for the
+# innermost real control, deduped by on-screen position, with Escape pressed
+# after each click to clear whatever the click opened.
+#
 # ⛔ DELIVERABLE BEFORE DECORATION (fixed 1405-06-30, run 35610912131)
 # The first version took a full-page screenshot AFTER the clicks and BEFORE
 # writing prompts.json. On a long animated page that shot timed out at 30s,
@@ -134,51 +142,70 @@ jobs:
                       page.mouse.wheel(0, 2400); page.wait_for_timeout(1500)
                   page.wait_for_timeout(1500)
 
-                  total = 0
-                  for lab in labels:
-                      n = page.get_by_text(lab, exact=False).count()
-                      total += n
-                      out["notes"].append(f"label {lab!r}: {n} on page")
-                  out["buttons_seen"] = total
+                  # ⛔ Ask the DOM for the innermost real control (see header).
+                  targets = page.evaluate(
+                      """labels => {
+                           const want = labels.map(s => s.toLowerCase());
+                           const all = Array.from(document.querySelectorAll(
+                             'button,[role=button],a[href="#"],[data-copy],[class*=copy]'));
+                           const seen = new Set(); const out = [];
+                           for (const el of all) {
+                             const txt = (el.innerText || el.getAttribute('aria-label') || '')
+                                           .trim().toLowerCase();
+                             if (!want.some(w => txt.includes(w))) continue;
+                             if (el.querySelector('button,[role=button]')) continue;
+                             const r = el.getBoundingClientRect();
+                             if (r.width < 4 || r.height < 4) continue;
+                             let tag = '';
+                             let p = el;
+                             for (let d = 0; d < 6 && p; d++, p = p.parentElement) {
+                               const t = (p.innerText || '').trim().split('\\n')
+                                           .map(x => x.trim())
+                                           .filter(x => x.length > 1 &&
+                                                   !want.some(w => x.toLowerCase().includes(w)));
+                               if (t.length) { tag = t[0].slice(0, 60); break; }
+                             }
+                             const key = tag + '|' + Math.round(r.top) + '|' + Math.round(r.left);
+                             if (seen.has(key)) continue;
+                             seen.add(key);
+                             el.setAttribute('data-grab-idx', String(out.length));
+                             out.push(tag);
+                           }
+                           return out;
+                         }""", labels)
+                  out["buttons_seen"] = len(targets)
+                  out["notes"].append(f"deduped clickables: {len(targets)}")
 
                   clicks = 0
-                  for lab in labels:
+                  for idx, tag in enumerate(targets):
                       if clicks >= maxc: break
-                      loc = page.get_by_text(lab, exact=False)
-                      n = loc.count()
-                      for i in range(n):
-                          if clicks >= maxc: break
-                          before = page.evaluate("window.__grabbed.length")
-                          tag = ""
+                      before = page.evaluate("window.__grabbed.length")
+                      el = page.locator(f'[data-grab-idx="{idx}"]')
+                      try:
+                          el.scroll_into_view_if_needed(timeout=4000)
+                          el.click(timeout=6000)
+                      except Exception:
+                          # A card overlay can swallow the real click; dispatch it directly.
                           try:
-                              tag = loc.nth(i).evaluate(
-                                  """el => {
-                                       let p = el;
-                                       for (let d = 0; d < 6 && p; d++, p = p.parentElement) {
-                                         const t = (p.innerText || '').trim().split('\\n')
-                                                     .filter(x => x.trim().length > 1);
-                                         if (t.length > 1) return t[0].slice(0, 60);
-                                       }
-                                       return '';
-                                     }""")
-                          except Exception:
-                              pass
-                          try:
-                              loc.nth(i).scroll_into_view_if_needed(timeout=5000)
-                              loc.nth(i).click(timeout=8000)
-                              page.wait_for_timeout(900)
+                              el.dispatch_event("click")
                           except Exception as e:
-                              out["notes"].append(f"click {i} ({lab}): {type(e).__name__}")
+                              out["notes"].append(f"click {idx} ({tag[:20]}): {type(e).__name__}")
                               continue
-                          clicks += 1
-                          after = page.evaluate("window.__grabbed")
-                          if len(after) > before:
-                              for t in after[before:]:
-                                  out["items"].append({"label": tag, "prompt": t})
-                          # ⛔ Save after every capture: a crash on click 12 must not
-                          #    throw away the eleven prompts already in hand.
-                          out["clicks"] = clicks
-                          save()
+                      page.wait_for_timeout(700)
+                      # ⛔ Dismiss whatever the click opened, or the next click is blocked.
+                      try:
+                          page.keyboard.press("Escape"); page.wait_for_timeout(250)
+                      except Exception:
+                          pass
+                      clicks += 1
+                      after = page.evaluate("window.__grabbed")
+                      if len(after) > before:
+                          for t in after[before:]:
+                              out["items"].append({"label": tag, "prompt": t})
+                      # ⛔ Save after every capture: a crash on click 12 must not
+                      #    throw away the eleven prompts already in hand.
+                      out["clicks"] = clicks
+                      save()
                   out["clicks"] = clicks
                   save()
 
