@@ -14,6 +14,13 @@
 # document.execCommand('copy') path, and the 'copy' event. Whatever the page
 # tries to copy lands in a JS array we read back afterwards.
 #
+# ⛔ DELIVERABLE BEFORE DECORATION (fixed 1405-06-30, run 35610912131)
+# The first version took a full-page screenshot AFTER the clicks and BEFORE
+# writing prompts.json. On a long animated page that shot timed out at 30s,
+# the job died with exit 1, and every captured prompt was lost. The result
+# file is now written first; the shot comes last, inside a try, and its
+# failure is a note rather than the end of the job.
+#
 # BOUNDARY - no login wall, no paywall, no challenge is bypassed. This only
 # presses a button that is already visible to any ordinary visitor on a public
 # page. A prompt that needs an account stays out of reach, by design.
@@ -61,7 +68,7 @@ jobs:
         run: |
           mkdir -p out
           python3 - <<'PY'
-          import json, os, re
+          import json, os
           from playwright.sync_api import sync_playwright
 
           url    = os.environ["U"].strip()
@@ -69,7 +76,6 @@ jobs:
           maxc   = int(os.environ.get("MAXC", "20"))
           scroll = int(os.environ.get("SC", "2"))
 
-          # Hook every copy path BEFORE any page script runs.
           HOOK = """
           window.__grabbed = [];
           (function () {
@@ -100,88 +106,108 @@ jobs:
           """
 
           out = {"url": url, "labels": labels, "items": [], "notes": []}
-          with sync_playwright() as pw:
-              b = pw.chromium.launch()
-              ctx = b.new_context(viewport={"width": 1440, "height": 1000})
-              try:
-                  ctx.grant_permissions(["clipboard-read", "clipboard-write"])
-              except Exception as e:
-                  out["notes"].append(f"permissions: {e}")
-              ctx.add_init_script(HOOK)
-              page = ctx.new_page()
-              page.goto(url, wait_until="domcontentloaded", timeout=60000)
-              try:
-                  page.wait_for_load_state("networkidle", timeout=25000)
-              except Exception:
-                  pass
-              for _ in range(scroll):
-                  page.mouse.wheel(0, 2400); page.wait_for_timeout(1500)
-              page.wait_for_timeout(1500)
 
-              # Collect the buttons once; the DOM can re-render between clicks,
-              # so we re-query by index each time rather than holding handles.
-              total = 0
-              for lab in labels:
-                  n = page.get_by_text(lab, exact=False).count()
-                  total += n
-                  out["notes"].append(f"label {lab!r}: {n} on page")
-              out["buttons_seen"] = total
+          def save():
+              out["verdict"] = ("ok" if out["items"]
+                                else ("no-button" if not out.get("buttons_seen")
+                                      else "clicked-but-empty"))
+              json.dump(out, open("out/prompts.json", "w", encoding="utf-8"),
+                        ensure_ascii=False, indent=1)
 
-              clicks = 0
-              for lab in labels:
-                  if clicks >= maxc: break
-                  loc = page.get_by_text(lab, exact=False)
-                  n = loc.count()
-                  for i in range(n):
+          page = b = None
+          try:
+              with sync_playwright() as pw:
+                  b = pw.chromium.launch()
+                  ctx = b.new_context(viewport={"width": 1440, "height": 1000})
+                  try:
+                      ctx.grant_permissions(["clipboard-read", "clipboard-write"])
+                  except Exception as e:
+                      out["notes"].append(f"permissions: {e}")
+                  ctx.add_init_script(HOOK)
+                  page = ctx.new_page()
+                  page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                  try:
+                      page.wait_for_load_state("networkidle", timeout=25000)
+                  except Exception:
+                      pass
+                  for _ in range(scroll):
+                      page.mouse.wheel(0, 2400); page.wait_for_timeout(1500)
+                  page.wait_for_timeout(1500)
+
+                  total = 0
+                  for lab in labels:
+                      n = page.get_by_text(lab, exact=False).count()
+                      total += n
+                      out["notes"].append(f"label {lab!r}: {n} on page")
+                  out["buttons_seen"] = total
+
+                  clicks = 0
+                  for lab in labels:
                       if clicks >= maxc: break
-                      before = page.evaluate("window.__grabbed.length")
-                      # Card label: the nearest heading-ish text above the button.
-                      tag = ""
-                      try:
-                          tag = loc.nth(i).evaluate(
-                              """el => {
-                                   let p = el;
-                                   for (let d = 0; d < 6 && p; d++, p = p.parentElement) {
-                                     const t = (p.innerText || '').trim().split('\\n')
-                                                 .filter(x => x.trim().length > 1);
-                                     if (t.length > 1) return t[0].slice(0, 60);
-                                   }
-                                   return '';
-                                 }""")
-                      except Exception:
-                          pass
-                      try:
-                          loc.nth(i).scroll_into_view_if_needed(timeout=5000)
-                          loc.nth(i).click(timeout=8000)
-                          page.wait_for_timeout(900)
-                      except Exception as e:
-                          out["notes"].append(f"click {i} ({lab}): {type(e).__name__}")
-                          continue
-                      clicks += 1
-                      after = page.evaluate("window.__grabbed")
-                      if len(after) > before:
-                          for t in after[before:]:
-                              out["items"].append({"label": tag, "prompt": t})
-              out["clicks"] = clicks
-              page.screenshot(path="out/page.png", full_page=True)
-              b.close()
+                      loc = page.get_by_text(lab, exact=False)
+                      n = loc.count()
+                      for i in range(n):
+                          if clicks >= maxc: break
+                          before = page.evaluate("window.__grabbed.length")
+                          tag = ""
+                          try:
+                              tag = loc.nth(i).evaluate(
+                                  """el => {
+                                       let p = el;
+                                       for (let d = 0; d < 6 && p; d++, p = p.parentElement) {
+                                         const t = (p.innerText || '').trim().split('\\n')
+                                                     .filter(x => x.trim().length > 1);
+                                         if (t.length > 1) return t[0].slice(0, 60);
+                                       }
+                                       return '';
+                                     }""")
+                          except Exception:
+                              pass
+                          try:
+                              loc.nth(i).scroll_into_view_if_needed(timeout=5000)
+                              loc.nth(i).click(timeout=8000)
+                              page.wait_for_timeout(900)
+                          except Exception as e:
+                              out["notes"].append(f"click {i} ({lab}): {type(e).__name__}")
+                              continue
+                          clicks += 1
+                          after = page.evaluate("window.__grabbed")
+                          if len(after) > before:
+                              for t in after[before:]:
+                                  out["items"].append({"label": tag, "prompt": t})
+                          # ⛔ Save after every capture: a crash on click 12 must not
+                          #    throw away the eleven prompts already in hand.
+                          out["clicks"] = clicks
+                          save()
+                  out["clicks"] = clicks
+                  save()
 
-          # A grab with zero text is a finding, not a silent pass.
-          out["verdict"] = ("ok" if out["items"]
-                            else ("no-button" if not out.get("buttons_seen") else "clicked-but-empty"))
-          json.dump(out, open("out/prompts.json", "w", encoding="utf-8"),
-                    ensure_ascii=False, indent=1)
+                  # Decoration last, and never fatal.
+                  try:
+                      page.screenshot(path="out/page.png", full_page=False, timeout=20000)
+                  except Exception as e:
+                      out["notes"].append(f"screenshot skipped: {type(e).__name__}")
+                      save()
+                  b.close()
+          except Exception as e:
+              out["notes"].append(f"fatal: {type(e).__name__}: {e}")
+              save()
+
+          save()
           print(f"buttons={out.get('buttons_seen')} clicks={out.get('clicks')} "
                 f"captured={len(out['items'])} verdict={out['verdict']}")
           PY
       - name: Summary
+        if: always()
         run: |
           python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
-          import json
+          import json, os
+          if not os.path.exists("out/prompts.json"):
+              print("## prompt-grab — no result file"); raise SystemExit
           d = json.load(open("out/prompts.json", encoding="utf-8"))
           print(f"## prompt-grab — `{d['url']}`\n")
           print(f"buttons seen: **{d.get('buttons_seen')}** · clicked: **{d.get('clicks')}** · "
-                f"captured: **{len(d['items'])}** · verdict: **{d['verdict']}**\n")
+                f"captured: **{len(d['items'])}** · verdict: **{d.get('verdict')}**\n")
           if d["items"]:
               print("| card | prompt (first 120 chars) |")
               print("|---|---|")
@@ -192,6 +218,7 @@ jobs:
               print(f"\n- note: {n}")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
         with:
           name: "prompt-grab-${{ github.run_id }}"
           path: out/
